@@ -32,8 +32,12 @@
 #include <unistd.h>
 #include <dirent.h>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include <orbis/libkernel.h>
-#include <orbis/Net.h>
+#include <orbis/SaveData.h>
 
 #include "common.h"
 #include "saves.h"
@@ -44,10 +48,7 @@
 #define HTTP_MAX_BACKLOG  4
 #define APOLLO_HTTP_VERSION_STR "1.0"
 
-extern int copy_directory(const char *startdir, const char *inputdir, const char *outputdir);
-extern int orbis_SaveMount(const save_entry_t *save, uint32_t mount_mode, char *mount_path);
-extern int orbis_SaveUmount(const char *mountPath);
-extern void mkdirs(const char *dir);
+/* Prototypes provided by common.h + saves.h — no local extern needed. */
 
 static pthread_t g_http_thread;
 static volatile int g_http_running = 0;
@@ -154,7 +155,7 @@ static int build_save_entry(save_entry_t *save, const char *user_id,
  */
 static int copy_dir_all(const char *src, const char *dst)
 {
-    mkdirs((char *)dst);
+    mkdirs(dst);
     return copy_directory(src, src, dst);
 }
 
