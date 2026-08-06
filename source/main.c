@@ -20,6 +20,7 @@
 #include "util.h"
 #include "common.h"
 #include "orbisPad.h"
+#include "http_server.h"
 
 //Menus
 #include "menu.h"
@@ -581,6 +582,10 @@ s32 main(s32 argc, const char* argv[])
 	initInternal();
 	http_init();
 	initPad();
+
+	// Apollo-Suqi: start HTTP server for SuqiPS4Games save integration
+	if (http_server_start() == 0)
+		LOG("Apollo-Suqi HTTP server started on port 9999");
 
 	// Initialize audio output library
 	if (sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_AUDIOOUT) < 0 ||
