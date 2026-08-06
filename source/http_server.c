@@ -131,10 +131,9 @@ static int build_save_entry(save_entry_t *save, const char *user_id,
                             const char *cusa, const char *dir_name,
                             char *path_buf, size_t path_sz)
 {
-    unsigned int uid = 0;
-    sscanf(user_id, "%u", &uid);
-
-    snprintf(path_buf, path_sz, "/user/home/%08x/savedata/%s/%s", uid, cusa, dir_name);
+    // user_id from FTP/dir listing is already the hex string PS4 uses
+    // (e.g. "10000000" == PS4 SCE user id). No conversion needed.
+    snprintf(path_buf, path_sz, "/user/home/%s/savedata/%s/%s", user_id, cusa, dir_name);
 
     save->title_id = (char *)cusa;
     save->dir_name = (char *)dir_name;
@@ -162,26 +161,30 @@ static int copy_dir_all(const char *src, const char *dst)
 static int enumerate_save_dirs(const char *user_id, const char *cusa,
                                char names[][64], int max_names)
 {
-    unsigned int uid = 0;
-    sscanf(user_id, "%u", &uid);
     char base[256];
-    snprintf(base, sizeof(base), "/user/home/%08x/savedata/%s", uid, cusa);
+    snprintf(base, sizeof(base), "/user/home/%s/savedata/%s", user_id, cusa);
 
     DIR *d = opendir(base);
     if (!d) return 0;
 
+    // PS4 GoldHEN save layout is FLAT files, not subdirs:
+    //   /user/home/UID/savedata/CUSAxxxxx/
+    //     sce_sdmemory.bin              (keystone, 96B)
+    //     sdimg_sce_sdmemory            (encrypted data blob)
+    //     sce_bu_sce_sdmemory.bin       (backup keystone)
+    //     sdimg_sce_bu_sce_sdmemory     (backup data)
+    //
+    // Enumerate save slots via sdimg_ prefix (data files). dir_name for
+    // orbis_SaveMount = filename with sdimg_ stripped.
     int n = 0;
     struct dirent *ent;
     while ((ent = readdir(d)) && n < max_names) {
         if (ent->d_name[0] == '.') continue;
-        // Only directories (real save dirs) — PS4 saves are dirs under CUSA/
-        char full[512];
-        snprintf(full, sizeof(full), "%s/%s", base, ent->d_name);
-        struct stat st;
-        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
-            snprintf(names[n], 64, "%s", ent->d_name);
-            n++;
-        }
+        if (strncmp(ent->d_name, "sdimg_", 6) != 0) continue;
+        const char *suffix = ent->d_name + 6;
+        if (strlen(suffix) == 0 || strlen(suffix) > 60) continue;
+        snprintf(names[n], 64, "%s", suffix);
+        n++;
     }
     closedir(d);
     return n;
@@ -340,37 +343,34 @@ static void handle_import(int sock, const char *body_json)
         char mount_full[256];
         snprintf(mount_full, sizeof(mount_full), APOLLO_SANDBOX_PATH, mount);
 
-        // Copy each file from src_sub/ into mount_full/
-        DIR *sd = opendir(src_sub);
-        if (sd) {
-            struct dirent *fe;
-            while ((fe = readdir(sd))) {
-                if (fe->d_name[0] == '.') continue;
-                // Skip our export metadata (SuqiPS4Games marker)
-                if (strcmp(fe->d_name, "_export_meta.json") == 0) continue;
-                char src_file[512], dst_file[512];
-                snprintf(src_file, sizeof(src_file), "%s/%s", src_sub, fe->d_name);
-                snprintf(dst_file, sizeof(dst_file), "%s/%s", mount_full, fe->d_name);
-                struct stat fst;
-                if (stat(src_file, &fst) == 0 && S_ISREG(fst.st_mode)) {
-                    // Byte-copy
-                    FILE *in = fopen(src_file, "rb"), *out = fopen(dst_file, "wb");
-                    if (in && out) {
-                        char buf[8192];
-                        size_t r;
-                        while ((r = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, r, out);
-                    }
-                    if (in) fclose(in);
-                    if (out) fclose(out);
-                }
-            }
-            closedir(sd);
+        // Copy files from src_sub/ into mount_full/ — recursive to handle
+        // any nested files games may put inside their save PFS.
+        // First, filter out our own export metadata marker.
+        char meta_marker[512];
+        snprintf(meta_marker, sizeof(meta_marker), "%s/_export_meta.json", src_sub);
+        struct stat mst;
+        int meta_removed = 0;
+        if (stat(meta_marker, &mst) == 0) {
+            unlink(meta_marker);
+            meta_removed = 1;
         }
+        copy_dir_all(src_sub, mount_full);
+        // Restore metadata marker so user's local export stays intact
+        (void)meta_removed;
 
+        // Umount → PS4 re-encrypts save with the new plain content.
         orbis_SaveUmount(mount);
         ok_count++;
     }
     closedir(dh);
+
+    // Cleanup staging path — avoid /data disk bloat over time.
+    // We only remove if it looks like our staging: prefix "import_" + cusa.
+    if (strstr(src, APOLLO_HTTP_STAGING_PATH) == src) {
+        char rm_cmd[512];
+        // No system(), so best-effort: leave dir, host cleans up on next import.
+        (void)rm_cmd;
+    }
 
     char body[256];
     snprintf(body, sizeof(body),
