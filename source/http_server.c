@@ -48,7 +48,7 @@
 
 #define HTTP_BUFFER_SIZE  (16 * 1024)
 #define HTTP_MAX_BACKLOG  4
-#define APOLLO_HTTP_VERSION_STR "1.1"
+#define APOLLO_HTTP_VERSION_STR "1.2"
 
 /* Prototypes provided by common.h + saves.h + sfo.h — apollo_config in settings.h */
 
