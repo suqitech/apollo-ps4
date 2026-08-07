@@ -149,15 +149,27 @@ static int build_save_entry(save_entry_t *save, const char *user_id,
 }
 
 /*
- * copy_directory from Apollo util.c: (startdir, inputdir, outputdir)
- * For Apollo semantics used in exec_cmd.c copySave():
- *   copy_directory(save->path, save->path, dest);
- * We mirror that.
+ * copy_directory from Apollo common.c REQUIRES trailing '/' on BOTH input
+ * and output dirs — internally uses snprintf("%s%s", dir, entry_name) with
+ * no explicit separator. Without trailing '/', paths get mashed:
+ *   "/data/apollo/http/CUSA/sce_sdmemory" + "sce_sys/foo" =
+ *   "/data/apollo/http/CUSA/sce_sdmemorysce_sys/foo"   ← corrupted
+ *
+ * copy_dir_all normalizes both paths to end with '/' before dispatch.
  */
 static int copy_dir_all(const char *src, const char *dst)
 {
-    mkdirs(dst);
-    return copy_directory(src, src, dst);
+    char src_n[512], dst_n[512];
+    size_t sl = strlen(src), dl = strlen(dst);
+
+    if (sl && src[sl - 1] == '/') snprintf(src_n, sizeof(src_n), "%s", src);
+    else                          snprintf(src_n, sizeof(src_n), "%s/", src);
+
+    if (dl && dst[dl - 1] == '/') snprintf(dst_n, sizeof(dst_n), "%s", dst);
+    else                          snprintf(dst_n, sizeof(dst_n), "%s/", dst);
+
+    mkdirs(dst_n);
+    return copy_directory(src_n, src_n, dst_n);
 }
 
 static int enumerate_save_dirs(const char *user_id, const char *cusa,
