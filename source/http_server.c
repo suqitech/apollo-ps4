@@ -41,14 +41,16 @@
 
 #include "common.h"
 #include "saves.h"
+#include "sfo.h"
 #include "util.h"
+#include "settings.h"
 #include "http_server.h"
 
 #define HTTP_BUFFER_SIZE  (16 * 1024)
 #define HTTP_MAX_BACKLOG  4
-#define APOLLO_HTTP_VERSION_STR "1.0"
+#define APOLLO_HTTP_VERSION_STR "1.1"
 
-/* Prototypes provided by common.h + saves.h — no local extern needed. */
+/* Prototypes provided by common.h + saves.h + sfo.h — apollo_config in settings.h */
 
 static pthread_t g_http_thread;
 static volatile int g_http_running = 0;
@@ -345,20 +347,38 @@ static void handle_import(int sock, const char *body_json)
 
         // Copy files from src_sub/ into mount_full/ — recursive to handle
         // any nested files games may put inside their save PFS.
-        // First, filter out our own export metadata marker.
+        // First, filter out our own export metadata marker (temp unlink).
         char meta_marker[512];
         snprintf(meta_marker, sizeof(meta_marker), "%s/_export_meta.json", src_sub);
         struct stat mst;
-        int meta_removed = 0;
-        if (stat(meta_marker, &mst) == 0) {
-            unlink(meta_marker);
-            meta_removed = 1;
-        }
-        copy_dir_all(src_sub, mount_full);
-        // Restore metadata marker so user's local export stays intact
-        (void)meta_removed;
+        if (stat(meta_marker, &mst) == 0) unlink(meta_marker);
 
-        // Umount → PS4 re-encrypts save with the new plain content.
+        copy_dir_all(src_sub, mount_full);
+
+        // CRITICAL: Resign sce_sys/param.sfo with current console's account_id
+        // Without this, PS4 detects mismatched ownership and silently reverts
+        // to the original save on next load (checksum-style validation).
+        // Mirrors Apollo's own _copy_save_hdd() flow.
+        char sfo_path[512];
+        snprintf(sfo_path, sizeof(sfo_path), "%ssce_sys/param.sfo", mount_full);
+        if (stat(sfo_path, &mst) == 0) {
+            sfo_patch_t patch = {
+                .flags = 0,
+                .user_id = apollo_config.user_id,
+                .account_id = apollo_config.account_id,
+                .psid = (uint8_t*) apollo_config.psid,
+                .directory = NULL,
+            };
+            if (patch_sfo(sfo_path, &patch) != SUCCESS) {
+                LOG("http/import: patch_sfo failed on %s", sfo_path);
+            } else {
+                LOG("http/import: resigned %s", sfo_path);
+            }
+        } else {
+            LOG("http/import: sce_sys/param.sfo missing, skip resign (%s)", sfo_path);
+        }
+
+        // Umount → PS4 re-encrypts + writes back to sdimg_ blob.
         orbis_SaveUmount(mount);
         ok_count++;
     }
